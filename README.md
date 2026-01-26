@@ -14,16 +14,20 @@ A TypeScript MCP server that connects Claude with Microsoft Outlook via the Micr
 ## Prerequisites
 
 - Node.js 18+
-- pnpm
+- pnpm, npm, or yarn
 - Azure account for app registration
 
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/outlook-mcp.git
+git clone https://github.com/sajadghawami/outlook-mcp.git
 cd outlook-mcp
-pnpm install
-pnpm build
+
+# Install dependencies (choose one)
+pnpm install   # or: npm install | yarn install
+
+# Build
+pnpm build     # or: npm run build | yarn build
 ```
 
 ## Configuration
