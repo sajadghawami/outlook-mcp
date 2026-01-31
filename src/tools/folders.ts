@@ -40,58 +40,52 @@ async function getAllFoldersHierarchy(
   accessToken: string,
   includeItemCounts: boolean
 ): Promise<MailFolder[]> {
-  try {
-    const selectFields = includeItemCounts
-      ? "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount"
-      : "id,displayName,parentFolderId,childFolderCount";
+  const selectFields = includeItemCounts
+    ? "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount"
+    : "id,displayName,parentFolderId,childFolderCount";
 
-    const response = await callGraphAPI<GraphAPIResponse<MailFolder>>(
-      accessToken,
-      "GET",
-      "me/mailFolders",
-      null,
-      {
-        $top: 100,
-        $select: selectFields,
+  // Recursive helper to fetch folder and all descendants
+  async function fetchFolderWithChildren(
+    folderId: string | null,
+    parentPath?: string
+  ): Promise<MailFolder[]> {
+    const endpoint = folderId
+      ? `me/mailFolders/${folderId}/childFolders`
+      : "me/mailFolders";
+
+    try {
+      const response = await callGraphAPI<GraphAPIResponse<MailFolder>>(
+        accessToken,
+        "GET",
+        endpoint,
+        null,
+        { $top: 100, $select: selectFields }
+      );
+
+      if (!response.value) return [];
+
+      const folders: MailFolder[] = [];
+      for (const folder of response.value) {
+        // Build the full path for display
+        const fullPath = parentPath ? `${parentPath}/${folder.displayName}` : folder.displayName;
+        folder.parentFolder = parentPath;
+        folder.isTopLevel = !folderId;
+        folders.push(folder);
+
+        // Recursively fetch children if this folder has any
+        if (folder.childFolderCount > 0) {
+          const children = await fetchFolderWithChildren(folder.id, fullPath);
+          folders.push(...children);
+        }
       }
-    );
-
-    if (!response.value) {
+      return folders;
+    } catch {
       return [];
     }
+  }
 
-    const foldersWithChildren = response.value.filter((f) => f.childFolderCount > 0);
-
-    const childFolderPromises = foldersWithChildren.map(async (folder) => {
-      try {
-        const childResponse = await callGraphAPI<GraphAPIResponse<MailFolder>>(
-          accessToken,
-          "GET",
-          `me/mailFolders/${folder.id}/childFolders`,
-          null,
-          { $select: selectFields }
-        );
-
-        const childFolders = childResponse.value || [];
-        childFolders.forEach((child) => {
-          child.parentFolder = folder.displayName;
-        });
-
-        return childFolders;
-      } catch {
-        return [];
-      }
-    });
-
-    const childFolders = await Promise.all(childFolderPromises);
-    const allChildFolders = childFolders.flat();
-
-    const topLevelFolders = response.value.map((folder) => ({
-      ...folder,
-      isTopLevel: true,
-    }));
-
-    return [...topLevelFolders, ...allChildFolders];
+  try {
+    return await fetchFolderWithChildren(null);
   } catch {
     throw new Error("Failed to retrieve folders");
   }

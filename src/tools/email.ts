@@ -78,98 +78,101 @@ export const markAsReadSchema = z.object({
 // Helper Functions
 // =============================================================================
 
-async function getAllFolders(accessToken: string): Promise<MailFolder[]> {
-  try {
-    const response = await callGraphAPI<GraphAPIResponse<MailFolder>>(
-      accessToken,
-      "GET",
-      "me/mailFolders",
-      null,
-      {
-        $top: 100,
-        $select: "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount",
-      }
-    );
+interface FolderWithPath extends MailFolder {
+  fullPath: string;
+}
 
-    if (!response.value) {
+async function getAllFolders(accessToken: string): Promise<FolderWithPath[]> {
+  const selectFields = "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount";
+
+  // Recursive helper to fetch folder and all descendants
+  async function fetchFolderWithChildren(
+    folderId: string | null,
+    parentPath?: string
+  ): Promise<FolderWithPath[]> {
+    const endpoint = folderId
+      ? `me/mailFolders/${folderId}/childFolders`
+      : "me/mailFolders";
+
+    try {
+      const response = await callGraphAPI<GraphAPIResponse<MailFolder>>(
+        accessToken,
+        "GET",
+        endpoint,
+        null,
+        { $top: 100, $select: selectFields }
+      );
+
+      if (!response.value) return [];
+
+      const folders: FolderWithPath[] = [];
+      for (const folder of response.value) {
+        // Build the full path for this folder
+        const fullPath = parentPath ? `${parentPath}/${folder.displayName}` : folder.displayName;
+        folders.push({ ...folder, fullPath });
+
+        // Recursively fetch children if this folder has any
+        if (folder.childFolderCount > 0) {
+          const children = await fetchFolderWithChildren(folder.id, fullPath);
+          folders.push(...children);
+        }
+      }
+      return folders;
+    } catch {
       return [];
     }
+  }
 
-    const foldersWithChildren = response.value.filter((f) => f.childFolderCount > 0);
-
-    const childFolderPromises = foldersWithChildren.map(async (folder) => {
-      try {
-        const childResponse = await callGraphAPI<GraphAPIResponse<MailFolder>>(
-          accessToken,
-          "GET",
-          `me/mailFolders/${folder.id}/childFolders`,
-          null,
-          {
-            $select: "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount",
-          }
-        );
-        return childResponse.value || [];
-      } catch {
-        return [];
-      }
-    });
-
-    const childFolders = await Promise.all(childFolderPromises);
-    return [...response.value, ...childFolders.flat()];
+  try {
+    return await fetchFolderWithChildren(null);
   } catch {
     return [];
   }
 }
 
 async function getFolderIdByName(accessToken: string, folderName: string): Promise<string | null> {
-  // Try direct match in top-level folders
-  try {
-    const response = await callGraphAPI<GraphAPIResponse<MailFolder>>(
-      accessToken,
-      "GET",
-      "me/mailFolders",
-      null,
-      { $filter: `displayName eq '${folderName}'` }
-    );
-
-    if (response.value && response.value.length > 0) {
-      return response.value[0].id;
-    }
-
-    // Try case-insensitive match
-    const allFoldersResponse = await callGraphAPI<GraphAPIResponse<MailFolder>>(
-      accessToken,
-      "GET",
-      "me/mailFolders",
-      null,
-      { $top: 100 }
-    );
-
-    if (allFoldersResponse.value) {
-      const lowerFolderName = folderName.toLowerCase();
-      const matchingFolder = allFoldersResponse.value.find(
-        (folder) => folder.displayName.toLowerCase() === lowerFolderName
-      );
-
-      if (matchingFolder) {
-        return matchingFolder.id;
-      }
-    }
-  } catch {
-    // Fall through to subfolder search
-  }
+  // Check if this is a path-based folder name (e.g., "Projekte/_Archive")
+  const isPath = folderName.includes("/");
+  const lowerFolderName = folderName.toLowerCase();
 
   // Search recursively through ALL folders including subfolders
   try {
     const allFolders = await getAllFolders(accessToken);
-    const lowerName = folderName.toLowerCase();
-    const match = allFolders.find((f) => f.displayName.toLowerCase() === lowerName);
 
-    if (match) {
-      return match.id;
+    // If it's a path, match against fullPath; otherwise match against displayName
+    if (isPath) {
+      const match = allFolders.find((f) => f.fullPath.toLowerCase() === lowerFolderName);
+      if (match) {
+        return match.id;
+      }
+    } else {
+      // Try exact displayName match first
+      const exactMatch = allFolders.find((f) => f.displayName.toLowerCase() === lowerFolderName);
+      if (exactMatch) {
+        return exactMatch.id;
+      }
     }
   } catch {
-    // No match found
+    // Fall through to direct API calls
+  }
+
+  // Fallback: Try direct match in top-level folders (only if not a path)
+  if (!isPath) {
+    try {
+      const response = await callGraphAPI<GraphAPIResponse<MailFolder>>(
+        accessToken,
+        "GET",
+        "me/mailFolders",
+        null,
+        { $filter: `displayName eq '${folderName}'` }
+      );
+
+      if (response.value && response.value.length > 0) {
+        return response.value[0].id;
+      }
+    } catch {
+      // No match found
+    }
   }
 
   return null;
